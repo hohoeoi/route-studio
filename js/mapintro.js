@@ -3,8 +3,14 @@
 // a fixed-seed "boil" wobble switching at 10 fps, and the label written stroke by stroke in drawn capitals.
 (function (RS) {
   const $ = id => document.getElementById(id);
-  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "below", dur: 6, res: "1920x1080", size: 1, place: "cm", boil: true};
-  const load = () => { try { return Object.assign({}, DEF, JSON.parse(localStorage.getItem("rs.intro") || "{}")); } catch (e) { return Object.assign({}, DEF); } };
+  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "auto", len: 70, shift: 0, dur: 6, res: "1920x1080", size: 1, place: "cm", boil: true};
+  const load = () => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("rs.intro") || "{}");
+      if (!("len" in raw)) delete raw.side;        // saved before automatic label placement existed -> start on "auto"
+      return Object.assign({}, DEF, raw);
+    } catch (e) { return Object.assign({}, DEF); }
+  };
   const save = o => { try { localStorage.setItem("rs.intro", JSON.stringify(o)); } catch (e) { /* private window */ } };
   let opt = load();
   // older saved choices (5 spots) -> 3x3 grid
@@ -171,19 +177,48 @@
     }
     coast.sort((a, b) => b.length - a.length);
     const pt = [X(o.lon), Y(o.lat)];
-    const cap = 92 * s * o.size, gap = 16 * s * o.size, line = 70 * s;
+    const cap = 92 * s * o.size, gap = 16 * s * o.size;
     const hand = drawable(o.text);
     let tw, th = cap;
     if (hand) tw = textStrokes(o.text, 0, 0, cap, gap).width;
     else { const c = new OffscreenCanvas(8, 8).getContext("2d"); c.font = fontCss(cap); tw = c.measureText(o.text).width; }
-    const above = o.side === "above";
-    const ly0 = above ? pt[1] - 16 * s : pt[1] + 16 * s, ly1 = above ? ly0 - line : ly0 + line;
-    const ty = above ? ly1 - 14 * s - th : ly1 + 14 * s;
-    const tx = Math.max(40 * s, Math.min(W - 60 * s - tw, pt[0] - 0.12 * tw));
-    const sc = {W, H, s, pt, ly0, ly1, hand, tx, ty, cap, text: o.text, dur: o.dur, coast: [], label: []};
+    // label at the end of a dashed leader: below / above / right / left of the dot.
+    // shift moves the label along the side (-1..1); "auto" tries many spots and keeps the one clear of the coast
+    const lay = (side, len, shift) => {
+      const d = {below: [0, 1], above: [0, -1], right: [1, 0], left: [-1, 0]}[side];
+      const a = [pt[0] + d[0] * 16 * s, pt[1] + d[1] * 16 * s], b = [a[0] + d[0] * len, a[1] + d[1] * len];
+      let tx, ty;
+      if (d[0] === 0) { tx = b[0] - (0.12 - shift) * tw; ty = d[1] > 0 ? b[1] + 14 * s : b[1] - 14 * s - th; }
+      else { ty = pt[1] - th / 2 + shift * th; tx = d[0] > 0 ? b[0] + 14 * s : b[0] - 14 * s - tw; }
+      return {a, b, tx, ty};
+    };
+    const pts = [].concat(...coast);
+    const hits = L => {                       // coast points under the label (with a margin) or on the leader
+      const m = 12 * s; let n = 0;
+      const [ax, ay] = L.a, [bx, by] = L.b, lx0 = Math.min(ax, bx) - 6 * s, lx1 = Math.max(ax, bx) + 6 * s, ly0 = Math.min(ay, by) - 6 * s, ly1 = Math.max(ay, by) + 6 * s;
+      for (const [x, y] of pts) {
+        if (x > L.tx - m && x < L.tx + tw + m && y > L.ty - m && y < L.ty + th + m) n++;
+        else if (x > lx0 && x < lx1 && y > ly0 && y < ly1) n++;
+      }
+      return n;
+    };
+    let L;
+    if (o.side === "auto") {
+      let best = Infinity;
+      ["below", "above", "right", "left"].forEach((side, si) => {
+        for (const len of [70, 110, 160, 220, 300]) for (const sh of side === "below" || side === "above" ? [0, -0.38, 0.12, -0.76, 0.3] : [0, -0.6, 0.6]) {
+          const c = lay(side, len * s, sh);
+          const out = Math.max(0, -c.tx) + Math.max(0, c.tx + tw - W) + Math.max(0, -c.ty) + Math.max(0, c.ty + th - H);
+          const cost = hits(c) * 1000 + out * 2 / s + len * 0.5 + si * 15 + Math.abs(sh) * 30;
+          if (cost < best) { best = cost; L = c; }
+        }
+      });
+    } else L = lay(o.side, (o.len || 70) * s, o.shift || 0);
+    const {tx, ty} = L;
+    const sc = {W, H, s, pt, lead: [L.a, L.b], hand, tx, ty, cap, text: o.text, dur: o.dur, coast: [], label: []};
     // where the whole drawing sits: 3x3 grid (l/c/r + t/m/b); edge spots use half the frame and hug that edge,
     // the drawing shrinks only when it does not fit there. "cm" = whole frame, centred (the original layout)
-    let x0 = Math.min(tx, pt[0]), x1 = Math.max(tx + tw, pt[0]), y0 = Math.min(ty, pt[1]), y1 = Math.max(ty + th, pt[1]);
+    let x0 = Math.min(tx, pt[0] - 10 * s), x1 = Math.max(tx + tw, pt[0] + 10 * s), y0 = Math.min(ty, pt[1] - 10 * s), y1 = Math.max(ty + th, pt[1] + 10 * s);
     for (const q of coast) for (const [x, y] of q) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
     const pl = /^[lcr][tmb]$/.test(o.place) ? o.place : "cm", hx = pl[0], vy = pl[1], mg = 30 * s;
     const aw = hx === "c" ? W : W / 2, ah = vy === "m" ? H : H / 2;
@@ -230,9 +265,10 @@
     // 3. dashed leader (2.3 - 2.8 s)
     const g = ease((t - 2.3) / 0.5);
     if (g > 0) {
-      ctx.lineWidth = 3.2 * s * lw; const dir = Math.sign(sc.ly1 - sc.ly0), end = Math.abs(sc.ly1 - sc.ly0) * g;
+      ctx.lineWidth = 3.2 * s * lw;
+      const [a, b] = sc.lead, len = hyp(a, b), ux = (b[0] - a[0]) / len, uy = (b[1] - a[1]) / len, end = len * g;
       ctx.beginPath();
-      for (let y = 0; y < end; y += 16 * s) { ctx.moveTo(sc.pt[0], sc.ly0 + dir * y); ctx.lineTo(sc.pt[0], sc.ly0 + dir * Math.min(y + 9 * s, end)); }
+      for (let k = 0; k < end; k += 16 * s) { const k2 = Math.min(k + 9 * s, end); ctx.moveTo(a[0] + ux * k, a[1] + uy * k); ctx.lineTo(a[0] + ux * k2, a[1] + uy * k2); }
       ctx.stroke();
     }
     // 4. label written (2.7 - 4.1 s)
@@ -308,7 +344,7 @@
   const dims = () => opt.res.split("x").map(Number);
 
   async function ensureScene() {
-    const [W, H] = dims(), key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.size, opt.place, W, H]);
+    const [W, H] = dims(), key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.len, opt.shift, opt.size, opt.place, W, H]);
     if (scene && key === sceneKey) { scene.dur = opt.dur; return scene; }
     if (!land) { land = await RS.neLayer("land", m => status(m)); status(""); }
     scene = build(land, opt, W, H); scene.dur = opt.dur; sceneKey = key;
@@ -408,6 +444,8 @@
     $("miText").value = opt.text; $("miLat").value = opt.lat; $("miLon").value = opt.lon;
     $("miSide").value = opt.side; $("miDur").value = opt.dur; $("miRes").value = opt.res; $("miSize").value = opt.size;
     $("miPlace").value = opt.place; $("miBoil").checked = opt.boil;
+    $("miLen").value = opt.len; $("miShift").value = opt.shift;
+    $("miLen").disabled = $("miShift").disabled = opt.side === "auto";
     $("miSizeVal").textContent = (+opt.size).toFixed(1) + "×";
   }
   function changed() { save(opt); if (!playing) preview(Math.min(cur || opt.dur, opt.dur)); }
@@ -432,13 +470,15 @@
           <button id="miFind" class="small">찾기</button>
         </div>
         <div class="g4" style="margin-top:10px">
-          <label class="f">글자 위치<select id="miSide"><option value="below">점 아래</option><option value="above">점 위</option></select></label>
+          <label class="f">글자 위치<select id="miSide"><option value="auto">자동 (지도와 안 겹치게)</option><option value="below">점 아래</option><option value="above">점 위</option><option value="right">점 오른쪽</option><option value="left">점 왼쪽</option></select></label>
           <label class="f">길이(초)<input type="number" id="miDur" min="4.5" max="30" step="0.5"></label>
           <label class="f">해상도<select id="miRes"><option value="1920x1080">1920×1080</option><option value="2560x1440">2560×1440</option><option value="3840x2160">3840×2160 (4K)</option></select></label>
           <label class="f">글자 크기 <span class="mono" id="miSizeVal"></span><input type="range" id="miSize" min="0.6" max="1.6" step="0.1"></label>
         </div>
         <div class="bar">
           <label class="f" style="width:180px">화면 배치<select id="miPlace"><option value="lt">좌상단</option><option value="ct">중상단</option><option value="rt">우상단</option><option value="lm">좌중단</option><option value="cm">중중단 (가운데)</option><option value="rm">우중단</option><option value="lb">좌하단</option><option value="cb">중하단</option><option value="rb">우하단</option></select></label>
+          <label class="f" style="width:170px">점선 길이 (수동일 때)<input type="range" id="miLen" min="30" max="400" step="5"></label>
+          <label class="f" style="width:170px">글자 옆으로 밀기 (수동일 때)<input type="range" id="miShift" min="-1" max="1" step="0.02"></label>
           <label class="check" style="align-self:flex-end;height:var(--h)"><input type="checkbox" id="miBoil"> 선 떨림 (손그림 느낌 · 끄면 선이 고정됨)</label>
         </div>
         <p class="hint">일본 지도는 Natural Earth(퍼블릭 도메인)라 출처 표기 없이 수익 영상에 써도 됩니다. 영문 글자는 글꼴 없이 직접 그린 획이라 글꼴 라이선스 문제가 없습니다.
@@ -460,7 +500,9 @@
     const num = (id, k, lo, hi) => $(id).addEventListener("change", e => { const v = parseFloat(e.target.value); if (isFinite(v)) { opt[k] = Math.max(lo, Math.min(hi, v)); changed(); } });
     $("miText").addEventListener("input", e => { opt.text = e.target.value.trim() || " "; changed(); });
     num("miLat", "lat", 20, 50); num("miLon", "lon", 120, 155); num("miDur", "dur", 4.5, 30);
-    $("miSide").onchange = e => { opt.side = e.target.value; changed(); };
+    $("miSide").onchange = e => { opt.side = e.target.value; fill(); changed(); };
+    $("miLen").oninput = e => { opt.len = +e.target.value; changed(); };
+    $("miShift").oninput = e => { opt.shift = +e.target.value; changed(); };
     $("miRes").onchange = e => { opt.res = e.target.value; changed(); };
     $("miPlace").onchange = e => { opt.place = e.target.value; changed(); };
     $("miBoil").onchange = e => { opt.boil = e.target.checked; changed(); };
