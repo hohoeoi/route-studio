@@ -3,7 +3,7 @@
 // a fixed-seed "boil" wobble switching at 10 fps, and the label written stroke by stroke in drawn capitals.
 (function (RS) {
   const $ = id => document.getElementById(id);
-  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "below", dur: 6, res: "1920x1080", size: 1};
+  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "below", dur: 6, res: "1920x1080", size: 1, place: "center", boil: true};
   const load = () => { try { return Object.assign({}, DEF, JSON.parse(localStorage.getItem("rs.intro") || "{}")); } catch (e) { return Object.assign({}, DEF); } };
   const save = o => { try { localStorage.setItem("rs.intro", JSON.stringify(o)); } catch (e) { /* private window */ } };
   let opt = load();
@@ -179,6 +179,13 @@
     const ty = above ? ly1 - 14 * s - th : ly1 + 14 * s;
     const tx = Math.max(40 * s, Math.min(W - 60 * s - tw, pt[0] - 0.12 * tw));
     const sc = {W, H, s, pt, ly0, ly1, hand, tx, ty, cap, text: o.text, dur: o.dur, coast: [], label: []};
+    // where the whole drawing sits: centre / left / right / top / bottom (shrunk only when it does not fit)
+    let x0 = Math.min(tx, pt[0]), x1 = Math.max(tx + tw, pt[0]), y0 = Math.min(ty, pt[1]), y1 = Math.max(ty + th, pt[1]);
+    for (const q of coast) for (const [x, y] of q) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    const AREA = {center: [0, 0, W, H], left: [0, 0, W / 2, H], right: [W / 2, 0, W / 2, H], top: [0, 0, W, H / 2], bottom: [0, H / 2, W, H / 2]};
+    const [ax, ay, aw, ah] = AREA[o.place] || AREA.center, mg = 30 * s;
+    const f = Math.min(1, (aw - 2 * mg) / (x1 - x0), (ah - 2 * mg) / (y1 - y0));
+    sc.fit = {f, ox: ax + aw / 2 - f * (x0 + x1) / 2, oy: ay + ah / 2 - f * (y0 + y1) / 2};
     // three boil variants of every line, prepared up front
     for (let v = 0; v < 3; v++) {
       sc.coast.push(coast.map((q, i) => withLen(wobble(q, 0.9 * s, 1000 * v + i + 1, true))));
@@ -200,12 +207,14 @@
     ctx.stroke();
   }
   function draw(ctx, sc, t, frameNo, bg) {
-    const {s} = sc, v = Math.floor(frameNo / 3) % 3;
+    const {s} = sc, v = opt.boil ? Math.floor(frameNo / 3) % 3 : 0;   // no boil: one fixed line for every frame
     ctx.save();
     ctx.fillStyle = bg || "#000"; if (bg === null) ctx.clearRect(0, 0, sc.W, sc.H); else ctx.fillRect(0, 0, sc.W, sc.H);
+    ctx.translate(sc.fit.ox, sc.fit.oy); ctx.scale(sc.fit.f, sc.fit.f);
+    const lw = Math.pow(sc.fit.f, -0.6);      // a shrunk drawing keeps most of its line weight
     ctx.strokeStyle = ctx.fillStyle = "#fff"; ctx.lineCap = ctx.lineJoin = "round";
     // 1. coastline draws on (0 - 2.2 s)
-    ctx.lineWidth = 4.2 * s; const p = ease(t / 2.2);
+    ctx.lineWidth = 4.2 * s * lw; const p = ease(t / 2.2);
     for (const L of sc.coast[v]) stroke(ctx, L, p * L.len);
     // 2. dot pops (2.0 - 2.4 s)
     const d = (t - 2.0) / 0.4;
@@ -216,7 +225,7 @@
     // 3. dashed leader (2.3 - 2.8 s)
     const g = ease((t - 2.3) / 0.5);
     if (g > 0) {
-      ctx.lineWidth = 3.2 * s; const dir = Math.sign(sc.ly1 - sc.ly0), end = Math.abs(sc.ly1 - sc.ly0) * g;
+      ctx.lineWidth = 3.2 * s * lw; const dir = Math.sign(sc.ly1 - sc.ly0), end = Math.abs(sc.ly1 - sc.ly0) * g;
       ctx.beginPath();
       for (let y = 0; y < end; y += 16 * s) { ctx.moveTo(sc.pt[0], sc.ly0 + dir * y); ctx.lineTo(sc.pt[0], sc.ly0 + dir * Math.min(y + 9 * s, end)); }
       ctx.stroke();
@@ -225,7 +234,7 @@
     const w = Math.min(1, (t - 2.7) / 1.4);
     if (w > 0) {
       if (sc.hand) {
-        ctx.lineWidth = 5 * s * Math.max(0.7, Math.min(1.4, sc.cap / (92 * s)));
+        ctx.lineWidth = lw * 5 * s * Math.max(0.7, Math.min(1.4, sc.cap / (92 * s)));
         const L = sc.label[v], tot = L.reduce((a, b) => a + b.len, 0); let budget = w * tot;
         for (const l of L) { if (budget <= 0) break; stroke(ctx, l, budget); budget -= l.len; }
       } else {                               // other scripts: the font, revealed left to right
@@ -294,7 +303,7 @@
   const dims = () => opt.res.split("x").map(Number);
 
   async function ensureScene() {
-    const [W, H] = dims(), key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.size, W, H]);
+    const [W, H] = dims(), key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.size, opt.place, W, H]);
     if (scene && key === sceneKey) { scene.dur = opt.dur; return scene; }
     if (!land) { land = await RS.neLayer("land", m => status(m)); status(""); }
     scene = build(land, opt, W, H); scene.dur = opt.dur; sceneKey = key;
@@ -393,6 +402,7 @@
   function fill() {
     $("miText").value = opt.text; $("miLat").value = opt.lat; $("miLon").value = opt.lon;
     $("miSide").value = opt.side; $("miDur").value = opt.dur; $("miRes").value = opt.res; $("miSize").value = opt.size;
+    $("miPlace").value = opt.place; $("miBoil").checked = opt.boil;
     $("miSizeVal").textContent = (+opt.size).toFixed(1) + "×";
   }
   function changed() { save(opt); if (!playing) preview(Math.min(cur || opt.dur, opt.dur)); }
@@ -422,6 +432,10 @@
           <label class="f">해상도<select id="miRes"><option value="1920x1080">1920×1080</option><option value="2560x1440">2560×1440</option><option value="3840x2160">3840×2160 (4K)</option></select></label>
           <label class="f">글자 크기 <span class="mono" id="miSizeVal"></span><input type="range" id="miSize" min="0.6" max="1.6" step="0.1"></label>
         </div>
+        <div class="bar">
+          <label class="f" style="width:180px">화면 배치<select id="miPlace"><option value="center">가운데</option><option value="left">왼쪽</option><option value="right">오른쪽</option><option value="top">위</option><option value="bottom">아래</option></select></label>
+          <label class="check" style="align-self:flex-end;height:var(--h)"><input type="checkbox" id="miBoil"> 선 떨림 (손그림 느낌 · 끄면 선이 고정됨)</label>
+        </div>
         <p class="hint">일본 지도는 Natural Earth(퍼블릭 도메인)라 출처 표기 없이 수익 영상에 써도 됩니다. 영문 글자는 글꼴 없이 직접 그린 획이라 글꼴 라이선스 문제가 없습니다.
           한글·일본어는 글꼴로 왼쪽부터 드러나게 표시됩니다 (손글씨 획 아님).</p>
       </section>
@@ -443,6 +457,8 @@
     num("miLat", "lat", 20, 50); num("miLon", "lon", 120, 155); num("miDur", "dur", 4.5, 30);
     $("miSide").onchange = e => { opt.side = e.target.value; changed(); };
     $("miRes").onchange = e => { opt.res = e.target.value; changed(); };
+    $("miPlace").onchange = e => { opt.place = e.target.value; changed(); };
+    $("miBoil").onchange = e => { opt.boil = e.target.checked; changed(); };
     $("miSize").oninput = e => { opt.size = +e.target.value; $("miSizeVal").textContent = opt.size.toFixed(1) + "×"; changed(); };
     $("miStation").onchange = e => {
       const s = RS.app.C().stations[+e.target.value]; if (!s) return;
