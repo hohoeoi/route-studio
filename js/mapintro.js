@@ -3,10 +3,12 @@
 // a fixed-seed "boil" wobble switching at 10 fps, and the label written stroke by stroke in drawn capitals.
 (function (RS) {
   const $ = id => document.getElementById(id);
-  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "below", dur: 6, res: "1920x1080", size: 1, place: "center", boil: true};
+  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "below", dur: 6, res: "1920x1080", size: 1, place: "cm", boil: true};
   const load = () => { try { return Object.assign({}, DEF, JSON.parse(localStorage.getItem("rs.intro") || "{}")); } catch (e) { return Object.assign({}, DEF); } };
   const save = o => { try { localStorage.setItem("rs.intro", JSON.stringify(o)); } catch (e) { /* private window */ } };
   let opt = load();
+  // older saved choices (5 spots) -> 3x3 grid
+  opt.place = {center: "cm", left: "lm", right: "rm", top: "ct", bottom: "cb"}[opt.place] || opt.place;
 
   // ------------------------------------------------------------ maths
   function rng(seed) {                       // mulberry32
@@ -179,13 +181,16 @@
     const ty = above ? ly1 - 14 * s - th : ly1 + 14 * s;
     const tx = Math.max(40 * s, Math.min(W - 60 * s - tw, pt[0] - 0.12 * tw));
     const sc = {W, H, s, pt, ly0, ly1, hand, tx, ty, cap, text: o.text, dur: o.dur, coast: [], label: []};
-    // where the whole drawing sits: centre / left / right / top / bottom (shrunk only when it does not fit)
+    // where the whole drawing sits: 3x3 grid (l/c/r + t/m/b); edge spots use half the frame and hug that edge,
+    // the drawing shrinks only when it does not fit there. "cm" = whole frame, centred (the original layout)
     let x0 = Math.min(tx, pt[0]), x1 = Math.max(tx + tw, pt[0]), y0 = Math.min(ty, pt[1]), y1 = Math.max(ty + th, pt[1]);
     for (const q of coast) for (const [x, y] of q) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-    const AREA = {center: [0, 0, W, H], left: [0, 0, W / 2, H], right: [W / 2, 0, W / 2, H], top: [0, 0, W, H / 2], bottom: [0, H / 2, W, H / 2]};
-    const [ax, ay, aw, ah] = AREA[o.place] || AREA.center, mg = 30 * s;
-    const f = Math.min(1, (aw - 2 * mg) / (x1 - x0), (ah - 2 * mg) / (y1 - y0));
-    sc.fit = {f, ox: ax + aw / 2 - f * (x0 + x1) / 2, oy: ay + ah / 2 - f * (y0 + y1) / 2};
+    const pl = /^[lcr][tmb]$/.test(o.place) ? o.place : "cm", hx = pl[0], vy = pl[1], mg = 30 * s;
+    const aw = hx === "c" ? W : W / 2, ah = vy === "m" ? H : H / 2;
+    const f = Math.min(1, (aw - 2 * mg) / (x1 - x0), (ah - 2 * mg) / (y1 - y0)), gw = f * (x1 - x0), gh = f * (y1 - y0);
+    const gx = hx === "l" ? mg : hx === "r" ? W - mg - gw : (W - gw) / 2;
+    const gy = vy === "t" ? mg : vy === "b" ? H - mg - gh : (H - gh) / 2;
+    sc.fit = {f, ox: gx - f * x0, oy: gy - f * y0};
     // three boil variants of every line, prepared up front
     for (let v = 0; v < 3; v++) {
       sc.coast.push(coast.map((q, i) => withLen(wobble(q, 0.9 * s, 1000 * v + i + 1, true))));
@@ -433,7 +438,7 @@
           <label class="f">글자 크기 <span class="mono" id="miSizeVal"></span><input type="range" id="miSize" min="0.6" max="1.6" step="0.1"></label>
         </div>
         <div class="bar">
-          <label class="f" style="width:180px">화면 배치<select id="miPlace"><option value="center">가운데</option><option value="left">왼쪽</option><option value="right">오른쪽</option><option value="top">위</option><option value="bottom">아래</option></select></label>
+          <label class="f" style="width:180px">화면 배치<select id="miPlace"><option value="lt">좌상단</option><option value="ct">중상단</option><option value="rt">우상단</option><option value="lm">좌중단</option><option value="cm">중중단 (가운데)</option><option value="rm">우중단</option><option value="lb">좌하단</option><option value="cb">중하단</option><option value="rb">우하단</option></select></label>
           <label class="check" style="align-self:flex-end;height:var(--h)"><input type="checkbox" id="miBoil"> 선 떨림 (손그림 느낌 · 끄면 선이 고정됨)</label>
         </div>
         <p class="hint">일본 지도는 Natural Earth(퍼블릭 도메인)라 출처 표기 없이 수익 영상에 써도 됩니다. 영문 글자는 글꼴 없이 직접 그린 획이라 글꼴 라이선스 문제가 없습니다.
