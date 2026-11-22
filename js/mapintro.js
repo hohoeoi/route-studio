@@ -3,7 +3,7 @@
 // a fixed-seed "boil" wobble switching at 10 fps, and the label written stroke by stroke in drawn capitals.
 (function (RS) {
   const $ = id => document.getElementById(id);
-  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "auto", len: 70, shift: 0, dur: 6, res: "1920x1080", size: 1, place: "cm", boil: true};
+  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "auto", len: 70, shift: 0, dur: 6, res: "1920x1080", size: 1, place: "cm", boil: true, dot: "#ffffff", style: "auto"};
   const load = () => {
     try {
       const raw = JSON.parse(localStorage.getItem("rs.intro") || "{}");
@@ -178,10 +178,10 @@
     coast.sort((a, b) => b.length - a.length);
     const pt = [X(o.lon), Y(o.lat)];
     const cap = 92 * s * o.size, gap = 16 * s * o.size;
-    const hand = drawable(o.text);
+    const hand = o.style !== "font" && drawable(o.text);
     let tw, th = cap;
     if (hand) tw = textStrokes(o.text, 0, 0, cap, gap).width;
-    else { const c = new OffscreenCanvas(8, 8).getContext("2d"); c.font = fontCss(cap); tw = c.measureText(o.text).width; }
+    else { const c = new OffscreenCanvas(8, 8).getContext("2d"); c.font = fontCss(cap, o.text); tw = c.measureText(o.text).width; }
     // label at the end of a dashed leader: below / above / right / left of the dot.
     // shift moves the label along the side (-1..1); "auto" tries many spots and keeps the one clear of the coast
     const lay = (side, len, shift) => {
@@ -233,7 +233,11 @@
     }
     return sc;
   }
-  function fontCss(px) { return `700 ${Math.round(px * 0.82)}px "Nanum Gothic", "Noto Sans JP", "Malgun Gothic", sans-serif`; }
+  // label set in type: the Korean / Japanese font and title weight chosen in tab 3 (글꼴)
+  function fontCss(px, text = "") {
+    const size = Math.round(px * 0.82), lang = /[぀-ヿ]/.test(text) ? "jp" : "kr";
+    return RS.fonts ? RS.fonts.css(size, lang, "Bold") : `700 ${size}px "Nanum Myeongjo", "Noto Sans JP", "Malgun Gothic", sans-serif`;
+  }
 
   // ------------------------------------------------------------ one frame
   const ease = t => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
@@ -260,7 +264,9 @@
     const d = (t - 2.0) / 0.4;
     if (d > 0) {
       const r = 8 * s * (d < 0.7 ? Math.min(1, d) * 1.25 : 1 + 0.25 * Math.max(0, 1 - (d - 0.7) / 0.3));
+      ctx.fillStyle = /^#[0-9a-f]{6}$/i.test(opt.dot) ? opt.dot : "#fff";
       ctx.beginPath(); ctx.arc(sc.pt[0], sc.pt[1], r, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = "#fff";
     }
     // 3. dashed leader (2.3 - 2.8 s)
     const g = ease((t - 2.3) / 0.5);
@@ -279,7 +285,7 @@
         const L = sc.label[v], tot = L.reduce((a, b) => a + b.len, 0); let budget = w * tot;
         for (const l of L) { if (budget <= 0) break; stroke(ctx, l, budget); budget -= l.len; }
       } else {                               // other scripts: the font, revealed left to right
-        ctx.font = fontCss(sc.cap); ctx.textBaseline = "top";
+        ctx.font = fontCss(sc.cap, sc.text); ctx.textBaseline = "top";
         const m = ctx.measureText(sc.text).width;
         ctx.beginPath(); ctx.rect(sc.tx - 10 * s, sc.ty - 20 * s, (m + 20 * s) * ease(w), sc.cap + 40 * s); ctx.clip();
         ctx.fillText(sc.text, sc.tx, sc.ty + sc.cap * 0.05);
@@ -344,9 +350,13 @@
   const dims = () => opt.res.split("x").map(Number);
 
   async function ensureScene() {
-    const [W, H] = dims(), key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.len, opt.shift, opt.size, opt.place, W, H]);
+    const [W, H] = dims(), fc = RS.fonts ? JSON.stringify(RS.fonts.conf()) : "", key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.len, opt.shift, opt.size, opt.place, opt.style, fc, W, H]);
     if (scene && key === sceneKey) { scene.dur = opt.dur; return scene; }
     if (!land) { land = await RS.neLayer("land", m => status(m)); status(""); }
+    if (!(opt.style !== "font" && drawable(opt.text))) {     // typed label: load its glyphs before measuring or drawing
+      if (RS.fonts) await RS.fonts.ensure(opt.text);
+      if (document.fonts) await document.fonts.load(fontCss(92 * H / 1080 * opt.size, opt.text), opt.text).catch(() => []);
+    }
     scene = build(land, opt, W, H); scene.dur = opt.dur; sceneKey = key;
     return scene;
   }
@@ -443,7 +453,7 @@
   function fill() {
     $("miText").value = opt.text; $("miLat").value = opt.lat; $("miLon").value = opt.lon;
     $("miSide").value = opt.side; $("miDur").value = opt.dur; $("miRes").value = opt.res; $("miSize").value = opt.size;
-    $("miPlace").value = opt.place; $("miBoil").checked = opt.boil;
+    $("miPlace").value = opt.place; $("miBoil").checked = opt.boil; $("miDot").value = opt.dot; $("miStyle").value = opt.style;
     $("miLen").value = opt.len; $("miShift").value = opt.shift;
     $("miLen").disabled = $("miShift").disabled = opt.side === "auto";
     $("miSizeVal").textContent = (+opt.size).toFixed(1) + "×";
@@ -460,7 +470,7 @@
       <section>
         <h2>지명 소개 영상 <small>일본 지도 윤곽선 → 점 → 점선 → 손글씨 지명</small></h2>
         <div class="g3">
-          <label class="f">표시할 글자 (영문은 손글씨로 써짐)<input type="text" id="miText"></label>
+          <label class="f">표시할 글자 (영문은 손글씨, 한글·일본어는 글꼴)<input type="text" id="miText"></label>
           <label class="f">위도<input type="number" id="miLat" step="0.0001"></label>
           <label class="f">경도<input type="number" id="miLon" step="0.0001"></label>
         </div>
@@ -472,17 +482,19 @@
         <div class="g4" style="margin-top:10px">
           <label class="f">글자 위치<select id="miSide"><option value="auto">자동 (지도와 안 겹치게)</option><option value="below">점 아래</option><option value="above">점 위</option><option value="right">점 오른쪽</option><option value="left">점 왼쪽</option></select></label>
           <label class="f">길이(초)<input type="number" id="miDur" min="4.5" max="30" step="0.5"></label>
-          <label class="f">해상도<select id="miRes"><option value="1920x1080">1920×1080</option><option value="2560x1440">2560×1440</option><option value="3840x2160">3840×2160 (4K)</option></select></label>
+          <label class="f">해상도<select id="miRes"><option value="1280x720">1280×720 (HD)</option><option value="1920x1080">1920×1080 (FHD)</option><option value="2560x1440">2560×1440</option><option value="3840x2160">3840×2160 (4K)</option></select></label>
           <label class="f">글자 크기 <span class="mono" id="miSizeVal"></span><input type="range" id="miSize" min="0.6" max="1.6" step="0.1"></label>
         </div>
         <div class="bar">
           <label class="f" style="width:180px">화면 배치<select id="miPlace"><option value="lt">좌상단</option><option value="ct">중상단</option><option value="rt">우상단</option><option value="lm">좌중단</option><option value="cm">중중단 (가운데)</option><option value="rm">우중단</option><option value="lb">좌하단</option><option value="cb">중하단</option><option value="rb">우하단</option></select></label>
           <label class="f" style="width:170px">점선 길이 (수동일 때)<input type="range" id="miLen" min="30" max="400" step="5"></label>
           <label class="f" style="width:170px">글자 옆으로 밀기 (수동일 때)<input type="range" id="miShift" min="-1" max="1" step="0.02"></label>
+          <label class="f" style="width:170px">글자 방식<select id="miStyle"><option value="auto">자동 (영문 손글씨)</option><option value="font">항상 글꼴로</option></select></label>
+          <label class="f" style="width:70px">점 색<input type="color" id="miDot" style="height:var(--h);padding:2px;width:100%"></label>
           <label class="check" style="align-self:flex-end;height:var(--h)"><input type="checkbox" id="miBoil"> 선 떨림 (손그림 느낌 · 끄면 선이 고정됨)</label>
         </div>
         <p class="hint">일본 지도는 Natural Earth(퍼블릭 도메인)라 출처 표기 없이 수익 영상에 써도 됩니다. 영문 글자는 글꼴 없이 직접 그린 획이라 글꼴 라이선스 문제가 없습니다.
-          한글·일본어는 글꼴로 왼쪽부터 드러나게 표시됩니다 (손글씨 획 아님).</p>
+          한글·일본어는 '3. 글귀·영상 → 글꼴'에서 고른 글꼴과 굵기로 왼쪽부터 드러나게 표시됩니다.</p>
       </section>
       <section>
         <canvas id="miCanvas" style="width:100%;display:block;border-radius:6px;background:#263a2c"></canvas>
@@ -506,6 +518,8 @@
     $("miRes").onchange = e => { opt.res = e.target.value; changed(); };
     $("miPlace").onchange = e => { opt.place = e.target.value; changed(); };
     $("miBoil").onchange = e => { opt.boil = e.target.checked; changed(); };
+    $("miDot").oninput = e => { opt.dot = e.target.value; changed(); };
+    $("miStyle").onchange = e => { opt.style = e.target.value; changed(); };
     $("miSize").oninput = e => { opt.size = +e.target.value; $("miSizeVal").textContent = opt.size.toFixed(1) + "×"; changed(); };
     $("miStation").onchange = e => {
       const s = RS.app.C().stations[+e.target.value]; if (!s) return;
