@@ -313,13 +313,22 @@ button:disabled { opacity: .5; cursor: default; }
         </div>
       </section>
       <section>
-        <h2>글꼴 <small>비워 두면 나눔스퀘어 → 맑은 고딕 순으로 자동 선택</small></h2>
-        <div class="bar" style="margin-top:0">
-          <label class="filebtn">한글/영문 글꼴…<input type="file" id="fontKr" accept=".ttf,.otf,.woff,.woff2" hidden></label>
-          <label class="filebtn">일본어 글꼴…<input type="file" id="fontJp" accept=".ttf,.otf,.woff,.woff2" hidden></label>
+        <h2>글꼴 <small>한글 · 영문 · 일본어를 따로 고를 수 있습니다</small></h2>
+        <div class="g3">
+          <label class="f">한글 글꼴<select id="fKr"></select></label>
+          <label class="f">제목·지명 굵기<select id="fBold"></select></label>
+          <label class="f">보통 글자 굵기<select id="fNormal"></select></label>
+          <label class="f">영문 글꼴<select id="fEn"></select></label>
+          <label class="f">일본어 글꼴<select id="fJp"></select></label>
+        </div>
+        <div class="bar">
+          <label class="filebtn">한글 글꼴 파일…<input type="file" id="fontKr" accept=".ttf,.otf,.woff,.woff2" hidden></label>
+          <label class="filebtn">일본어 글꼴 파일…<input type="file" id="fontJp" accept=".ttf,.otf,.woff,.woff2" hidden></label>
           <button id="fontClear">기본으로</button>
         </div>
-        <p class="hint" id="fontLbl"></p>
+        <p class="hint" id="fontNow" style="white-space:pre-line"></p>
+        <p class="hint" id="fontLbl" hidden></p>
+        <p class="hint">굵기는 고른 한글 글꼴이 실제로 가진 굵기만 나옵니다. 나눔·Noto 글꼴은 OFL 라이선스라 수익 영상에도 무료로 쓸 수 있습니다.</p>
       </section>
     </div>
   </div>
@@ -356,6 +365,7 @@ button:disabled { opacity: .5; cursor: default; }
 <script src="js/sprites.js"></script>
 <script src="js/render.js"></script>
 <script src="js/app.js"></script>
+<script src="js/fonts.js"></script>
 <script src="js/mapintro.js"></script>
 </body>
 </html>
