@@ -166,7 +166,7 @@
   function build(land, o, W, H) {
     const s = H / 1080, k = 63 * s, kx = k * Math.cos(38 * Math.PI / 180);
     const X = lo => W / 2 + 40 * s + (lo - 137.6) * kx, Y = la => 42 * s + (45.55 - la) * k;
-    const z = [2, 3, 4, 5].includes(+o.zoom) ? +o.zoom : 1;
+    const z = Math.round(+o.zoom) >= 2 && Math.round(+o.zoom) <= 10 ? Math.round(+o.zoom) : 1;
     const rings = [];                          // Japan's coastline projected to the whole-map view, not yet simplified
     for (const sh of land) {
       const [w, so, e, n] = sh.bbox;
@@ -239,7 +239,7 @@
     // where the whole drawing sits: 3x3 grid (l/c/r + t/m/b); edge spots use half the frame and hug that edge,
     // the drawing shrinks only when it does not fit there. "cm" = whole frame, centred (the original layout)
     const pl = /^[lcr][tmb]$/.test(o.place) ? o.place : "cm", hx = pl[0], vy = pl[1], mg = 30 * s;
-    const fitTo = (x0, x1, y0, y1) => {
+    const fitTo = (x0, x1, y0, y1, hx = pl[0], vy = pl[1]) => {
       const aw = hx === "c" ? W : W / 2, ah = vy === "m" ? H : H / 2;
       const f = Math.min(1, (aw - 2 * mg) / (x1 - x0), (ah - 2 * mg) / (y1 - y0)), gw = f * (x1 - x0), gh = f * (y1 - y0);
       const gx = hx === "l" ? mg : hx === "r" ? W - mg - gw : (W - gw) / 2;
@@ -260,10 +260,11 @@
     } else {
       // zoom: the whole map as it is placed without zoom, then enlarged z times around the dot,
       // with the dot moved to its spot in the 3x3 grid. The coast is rebuilt at the zoomed size so detail stays sharp.
-      const fit = fitTo(...box([[pt[0] - 10 * s, pt[1] - 10 * s], [pt[0] + 10 * s, pt[1] + 10 * s]]));
+      const bx = box([[pt[0] - 10 * s, pt[1] - 10 * s], [pt[0] + 10 * s, pt[1] + 10 * s]]);
+      const fit = fitTo(...bx), zs = fitTo(...bx, "c", "m").f * z;   // z times the full-frame map, whatever the spot
       const pF = [fit.ox + fit.f * pt[0], fit.oy + fit.f * pt[1]];
       const A = [{l: 0.3, c: 0.5, r: 0.7}[hx] * W, {t: 0.36, m: 0.5, b: 0.64}[vy] * H];
-      const T = p => [A[0] + (fit.ox + fit.f * p[0] - pF[0]) * z, A[1] + (fit.oy + fit.f * p[1] - pF[1]) * z];
+      const T = p => [A[0] + (p[0] - pt[0]) * zs, A[1] + (p[1] - pt[1]) * zs];
       const pad = 40 * s, inside = p => p[0] > -pad && p[0] < W + pad && p[1] > -pad && p[1] < H + pad;
       for (const r of rings) {
         if (o.zmode !== "start" && area(r) < 60 * s * s) continue;   // zoom animation: same islands before and after
@@ -277,7 +278,7 @@
       }
       fin.sort(bySize);
       L = choose(A, [].concat(...fin));
-      sc.pt = A; sc.fit = {f: 1, ox: 0, oy: 0}; sc.zoom = {fit, pF, A};
+      sc.pt = A; sc.fit = {f: 1, ox: 0, oy: 0}; sc.zoom = {fit, pF, A, kEnd: zs / fit.f};
     }
     sc.lead = [L.a, L.b]; sc.tx = L.tx; sc.ty = L.ty;
     // three boil variants of every line, prepared up front
@@ -323,7 +324,7 @@
       ctx.lineWidth = 4.2 * s * lw;
       for (const L of sc.coast[v]) stroke(ctx, L, p * L.len);
     } else if (anim && t < ZE) {
-      const {fit, pF, A} = sc.zoom, e = ease((t - ZS) / (ZE - ZS)), kz = 1 + (sc.z - 1) * e;
+      const {fit, pF, A, kEnd} = sc.zoom, e = ease((t - ZS) / (ZE - ZS)), kz = 1 + (kEnd - 1) * e;
       const P = [pF[0] + (A[0] - pF[0]) * e, pF[1] + (A[1] - pF[1]) * e];
       ctx.save();
       ctx.translate(P[0], P[1]); ctx.scale(kz, kz); ctx.translate(-pF[0], -pF[1]);
@@ -567,7 +568,7 @@
           <label class="f" style="width:170px">점선 길이 (수동일 때)<input type="range" id="miLen" min="30" max="400" step="5"></label>
           <label class="f" style="width:170px">글자 옆으로 밀기 (수동일 때)<input type="range" id="miShift" min="-1" max="1" step="0.02"></label>
           <label class="f" style="width:170px">글자 방식<select id="miStyle"><option value="auto">자동 (영문 손글씨)</option><option value="font">항상 글꼴로</option></select></label>
-          <label class="f" style="width:150px">점 기준 확대<select id="miZoom"><option value="1">없음 (일본 전체)</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="5">5배</option></select></label>
+          <label class="f" style="width:150px">점 기준 확대<select id="miZoom"><option value="1">없음 (일본 전체)</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="5">5배</option><option value="6">6배</option><option value="7">7배</option><option value="8">8배</option><option value="9">9배</option><option value="10">10배</option></select></label>
           <label class="f" style="width:170px">확대 방식<select id="miZmode"><option value="after">지도 그린 뒤 확대</option><option value="start">처음부터 확대</option></select></label>
           <label class="f" style="width:70px">점 색<input type="color" id="miDot" style="height:var(--h);padding:2px;width:100%"></label>
           <label class="check" style="align-self:flex-end;height:var(--h)"><input type="checkbox" id="miBoil"> 선 떨림 (손그림 느낌 · 끄면 선이 고정됨)</label>
