@@ -3,7 +3,7 @@
 // a fixed-seed "boil" wobble switching at 10 fps, and the label written stroke by stroke in drawn capitals.
 (function (RS) {
   const $ = id => document.getElementById(id);
-  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "auto", len: 70, shift: 0, dur: 6, res: "1920x1080", size: 1, place: "cm", boil: true, dot: "#ffffff", style: "auto"};
+  const DEF = {text: "SHIONOMISAKI", lat: 33.4366, lon: 135.7622, side: "auto", len: 70, shift: 0, dur: 6, res: "1920x1080", size: 1, place: "cm", boil: true, dot: "#ffffff", style: "auto", zoom: 1, zmode: "after"};
   const load = () => {
     try {
       const raw = JSON.parse(localStorage.getItem("rs.intro") || "{}");
@@ -152,10 +152,22 @@
   }
 
   // ------------------------------------------------------------ scene (built once per settings)
+  function chaikinOpen(pts, n) {             // open line: ends stay put
+    for (let k = 0; k < n; k++) {
+      const out = [pts[0]];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const p = pts[i], q = pts[i + 1];
+        out.push([0.75 * p[0] + 0.25 * q[0], 0.75 * p[1] + 0.25 * q[1]], [0.25 * p[0] + 0.75 * q[0], 0.25 * p[1] + 0.75 * q[1]]);
+      }
+      out.push(pts[pts.length - 1]); pts = out;
+    }
+    return pts;
+  }
   function build(land, o, W, H) {
     const s = H / 1080, k = 63 * s, kx = k * Math.cos(38 * Math.PI / 180);
     const X = lo => W / 2 + 40 * s + (lo - 137.6) * kx, Y = la => 42 * s + (45.55 - la) * k;
-    const coast = [];
+    const z = [2, 3, 4, 5].includes(+o.zoom) ? +o.zoom : 1;
+    const rings = [];                          // Japan's coastline projected to the whole-map view, not yet simplified
     for (const sh of land) {
       const [w, so, e, n] = sh.bbox;
       if (e < 129 || w > 146.5 || n < 30.5 || so > 46) continue;
@@ -164,72 +176,116 @@
         for (let i = 0; i < f.length; i += 2) { cx += f[i]; cy += f[i + 1]; }
         cx /= m; cy /= m;
         if (!(cx > 129.4 && cx < 145.7 && cy > 30.95 && cy < 45.6)) continue;
-        let q = []; for (let i = 0; i < f.length; i += 2) q.push([X(f[i]), Y(f[i + 1])]);
-        if (area(q) < 60 * s * s) continue;
+        const q = []; for (let i = 0; i < f.length; i += 2) q.push([X(f[i]), Y(f[i + 1])]);
+        if (area(q) < 60 * s * s / (z * z)) continue;      // small islands only show up when zoomed in
         if (hyp(q[0], q[q.length - 1]) < 1e-6) q.pop();
+        rings.push(q);
+      }
+    }
+    // simplify (Douglas-Peucker), round (Chaikin) and resample every 2 px; rings are split at their far point first
+    const smooth = (q, closed) => {
+      if (closed) {
         let j = 0, bd = 0; q.forEach((p, i) => { const d = hyp(p, q[0]); if (d > bd) { bd = d; j = i; } });
         const a = dp(q.slice(0, j + 1), 1.6 * s), b = dp(q.slice(j).concat([q[0]]), 1.6 * s);
         q = a.slice(0, -1).concat(b.slice(0, -1));
-        if (q.length < 4) continue;
+        if (q.length < 4) return null;
         q = chaikin(q, 2);
-        coast.push(resample(q.concat([q[0]]), 2 * s));
+        return resample(q.concat([q[0]]), 2 * s);
       }
-    }
-    coast.sort((a, b) => b.length - a.length);
+      q = dp(q, 1.6 * s);
+      if (q.length < 2 || hyp(q[0], q[q.length - 1]) + q.length < 3) return null;
+      return resample(chaikinOpen(q, 2), 2 * s);
+    };
+    const bySize = (a, b) => b.length - a.length;
+    const coast = rings.filter(q => area(q) >= 60 * s * s).map(q => smooth(q, true)).filter(Boolean).sort(bySize);
     const pt = [X(o.lon), Y(o.lat)];
     const cap = 92 * s * o.size, gap = 16 * s * o.size;
     const hand = o.style !== "font" && drawable(o.text);
     let tw, th = cap;
     if (hand) tw = textStrokes(o.text, 0, 0, cap, gap).width;
     else { const c = new OffscreenCanvas(8, 8).getContext("2d"); c.font = fontCss(cap, o.text); tw = c.measureText(o.text).width; }
-    // label at the end of a dashed leader: below / above / right / left of the dot.
+    // label at the end of a dashed leader: below / above / right / left of the dot P.
     // shift moves the label along the side (-1..1); "auto" tries many spots and keeps the one clear of the coast
-    const lay = (side, len, shift) => {
+    const lay = (P, side, len, shift) => {
       const d = {below: [0, 1], above: [0, -1], right: [1, 0], left: [-1, 0]}[side];
-      const a = [pt[0] + d[0] * 16 * s, pt[1] + d[1] * 16 * s], b = [a[0] + d[0] * len, a[1] + d[1] * len];
+      const a = [P[0] + d[0] * 16 * s, P[1] + d[1] * 16 * s], b = [a[0] + d[0] * len, a[1] + d[1] * len];
       let tx, ty;
       if (d[0] === 0) { tx = b[0] - (0.12 - shift) * tw; ty = d[1] > 0 ? b[1] + 14 * s : b[1] - 14 * s - th; }
-      else { ty = pt[1] - th / 2 + shift * th; tx = d[0] > 0 ? b[0] + 14 * s : b[0] - 14 * s - tw; }
+      else { ty = P[1] - th / 2 + shift * th; tx = d[0] > 0 ? b[0] + 14 * s : b[0] - 14 * s - tw; }
       return {a, b, tx, ty};
     };
-    const pts = [].concat(...coast);
-    const hits = L => {                       // coast points under the label (with a margin) or on the leader
-      const m = 12 * s; let n = 0;
-      const [ax, ay] = L.a, [bx, by] = L.b, lx0 = Math.min(ax, bx) - 6 * s, lx1 = Math.max(ax, bx) + 6 * s, ly0 = Math.min(ay, by) - 6 * s, ly1 = Math.max(ay, by) + 6 * s;
-      for (const [x, y] of pts) {
-        if (x > L.tx - m && x < L.tx + tw + m && y > L.ty - m && y < L.ty + th + m) n++;
-        else if (x > lx0 && x < lx1 && y > ly0 && y < ly1) n++;
-      }
-      return n;
-    };
-    let L;
-    if (o.side === "auto") {
-      let best = Infinity;
+    const choose = (P, pts) => {
+      const hits = L => {                     // coast points under the label (with a margin) or on the leader
+        const m = 12 * s; let n = 0;
+        const [ax, ay] = L.a, [bx, by] = L.b, lx0 = Math.min(ax, bx) - 6 * s, lx1 = Math.max(ax, bx) + 6 * s, ly0 = Math.min(ay, by) - 6 * s, ly1 = Math.max(ay, by) + 6 * s;
+        for (const [x, y] of pts) {
+          if (x > L.tx - m && x < L.tx + tw + m && y > L.ty - m && y < L.ty + th + m) n++;
+          else if (x > lx0 && x < lx1 && y > ly0 && y < ly1) n++;
+        }
+        return n;
+      };
+      if (o.side !== "auto") return lay(P, o.side, (o.len || 70) * s, o.shift || 0);
+      let best = Infinity, L = null;
       ["below", "above", "right", "left"].forEach((side, si) => {
         for (const len of [70, 110, 160, 220, 300]) for (const sh of side === "below" || side === "above" ? [0, -0.38, 0.12, -0.76, 0.3] : [0, -0.6, 0.6]) {
-          const c = lay(side, len * s, sh);
+          const c = lay(P, side, len * s, sh);
           const out = Math.max(0, -c.tx) + Math.max(0, c.tx + tw - W) + Math.max(0, -c.ty) + Math.max(0, c.ty + th - H);
-          const cost = hits(c) * 1000 + out * 2 / s + len * 0.5 + si * 15 + Math.abs(sh) * 30;
+          const cost = hits(c) * 1000 + out * (z > 1 ? 60 : 2) / s + len * 0.5 + si * 15 + Math.abs(sh) * 30;   // zoomed: nothing shrinks to make room
           if (cost < best) { best = cost; L = c; }
         }
       });
-    } else L = lay(o.side, (o.len || 70) * s, o.shift || 0);
-    const {tx, ty} = L;
-    const sc = {W, H, s, pt, lead: [L.a, L.b], hand, tx, ty, cap, text: o.text, dur: o.dur, coast: [], label: []};
+      return L;
+    };
     // where the whole drawing sits: 3x3 grid (l/c/r + t/m/b); edge spots use half the frame and hug that edge,
     // the drawing shrinks only when it does not fit there. "cm" = whole frame, centred (the original layout)
-    let x0 = Math.min(tx, pt[0] - 10 * s), x1 = Math.max(tx + tw, pt[0] + 10 * s), y0 = Math.min(ty, pt[1] - 10 * s), y1 = Math.max(ty + th, pt[1] + 10 * s);
-    for (const q of coast) for (const [x, y] of q) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
     const pl = /^[lcr][tmb]$/.test(o.place) ? o.place : "cm", hx = pl[0], vy = pl[1], mg = 30 * s;
-    const aw = hx === "c" ? W : W / 2, ah = vy === "m" ? H : H / 2;
-    const f = Math.min(1, (aw - 2 * mg) / (x1 - x0), (ah - 2 * mg) / (y1 - y0)), gw = f * (x1 - x0), gh = f * (y1 - y0);
-    const gx = hx === "l" ? mg : hx === "r" ? W - mg - gw : (W - gw) / 2;
-    const gy = vy === "t" ? mg : vy === "b" ? H - mg - gh : (H - gh) / 2;
-    sc.fit = {f, ox: gx - f * x0, oy: gy - f * y0};
+    const fitTo = (x0, x1, y0, y1) => {
+      const aw = hx === "c" ? W : W / 2, ah = vy === "m" ? H : H / 2;
+      const f = Math.min(1, (aw - 2 * mg) / (x1 - x0), (ah - 2 * mg) / (y1 - y0)), gw = f * (x1 - x0), gh = f * (y1 - y0);
+      const gx = hx === "l" ? mg : hx === "r" ? W - mg - gw : (W - gw) / 2;
+      const gy = vy === "t" ? mg : vy === "b" ? H - mg - gh : (H - gh) / 2;
+      return {f, ox: gx - f * x0, oy: gy - f * y0};
+    };
+    const box = extra => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const q of coast.concat([extra])) for (const [x, y] of q) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+      return [x0, x1, y0, y1];
+    };
+    const sc = {W, H, s, z, hand, cap, text: o.text, dur: o.dur, coast: [], final: [], label: []};
+    let L, fin = [];
+    if (z === 1) {
+      L = choose(pt, [].concat(...coast));
+      sc.pt = pt;
+      sc.fit = fitTo(...box([[L.tx, L.ty], [L.tx + tw, L.ty + th], [pt[0] - 10 * s, pt[1] - 10 * s], [pt[0] + 10 * s, pt[1] + 10 * s]]));
+    } else {
+      // zoom: the whole map as it is placed without zoom, then enlarged z times around the dot,
+      // with the dot moved to its spot in the 3x3 grid. The coast is rebuilt at the zoomed size so detail stays sharp.
+      const fit = fitTo(...box([[pt[0] - 10 * s, pt[1] - 10 * s], [pt[0] + 10 * s, pt[1] + 10 * s]]));
+      const pF = [fit.ox + fit.f * pt[0], fit.oy + fit.f * pt[1]];
+      const A = [{l: 0.3, c: 0.5, r: 0.7}[hx] * W, {t: 0.36, m: 0.5, b: 0.64}[vy] * H];
+      const T = p => [A[0] + (fit.ox + fit.f * p[0] - pF[0]) * z, A[1] + (fit.oy + fit.f * p[1] - pF[1]) * z];
+      const pad = 40 * s, inside = p => p[0] > -pad && p[0] < W + pad && p[1] > -pad && p[1] < H + pad;
+      for (const r of rings) {
+        if (o.zmode !== "start" && area(r) < 60 * s * s) continue;   // zoom animation: same islands before and after
+        const q = r.map(T);
+        if (area(q) < 60 * s * s) continue;
+        if (q.every(inside)) { const c = smooth(q, true); if (c) fin.push(c); continue; }
+        let run = [];
+        const flush = () => { if (run.length > 1) { const c = smooth(run, false); if (c) fin.push(c); } run = []; };
+        for (const p of q.concat([q[0]])) { if (inside(p)) run.push(p); else flush(); }
+        flush();
+      }
+      fin.sort(bySize);
+      L = choose(A, [].concat(...fin));
+      sc.pt = A; sc.fit = {f: 1, ox: 0, oy: 0}; sc.zoom = {fit, pF, A};
+    }
+    sc.lead = [L.a, L.b]; sc.tx = L.tx; sc.ty = L.ty;
     // three boil variants of every line, prepared up front
+    const closed = q => hyp(q[0], q[q.length - 1]) < 1e-6;
     for (let v = 0; v < 3; v++) {
       sc.coast.push(coast.map((q, i) => withLen(wobble(q, 0.9 * s, 1000 * v + i + 1, true))));
-      if (hand) sc.label.push(textStrokes(o.text, tx, ty, cap, gap).strokes.map((q, i) => withLen(wobble(resample(q, 1.5 * s), 0.4 * s, 77 + 1000 * v + i, false))));
+      sc.final.push(fin.map((q, i) => withLen(wobble(q, 0.9 * s, 5000 + 1000 * v + i, closed(q)))));
+      if (hand) sc.label.push(textStrokes(o.text, L.tx, L.ty, cap, gap).strokes.map((q, i) => withLen(wobble(resample(q, 1.5 * s), 0.4 * s, 77 + 1000 * v + i, false))));
     }
     return sc;
   }
@@ -252,24 +308,44 @@
   }
   function draw(ctx, sc, t, frameNo, bg) {
     const {s} = sc, v = opt.boil ? Math.floor(frameNo / 3) % 3 : 0;   // no boil: one fixed line for every frame
+    // zoom "after": the whole map draws, the dot pops, then the view closes in on it (2.5 - 3.7 s); the leader
+    // and the label follow once the zoom has settled
+    const anim = sc.z > 1 && opt.zmode !== "start", ZS = 2.5, ZE = 3.7, lag = anim ? ZE - 2.25 : 0;
     ctx.save();
     ctx.fillStyle = bg || "#000"; if (bg === null) ctx.clearRect(0, 0, sc.W, sc.H); else ctx.fillRect(0, 0, sc.W, sc.H);
-    ctx.translate(sc.fit.ox, sc.fit.oy); ctx.scale(sc.fit.f, sc.fit.f);
-    const lw = Math.pow(sc.fit.f, -0.6);      // a shrunk drawing keeps most of its line weight
     ctx.strokeStyle = ctx.fillStyle = "#fff"; ctx.lineCap = ctx.lineJoin = "round";
+    const p = ease(t / 2.2);
+    let lw = 1, dotAt = sc.pt;
     // 1. coastline draws on (0 - 2.2 s)
-    ctx.lineWidth = 4.2 * s * lw; const p = ease(t / 2.2);
-    for (const L of sc.coast[v]) stroke(ctx, L, p * L.len);
+    if (sc.z === 1) {
+      ctx.translate(sc.fit.ox, sc.fit.oy); ctx.scale(sc.fit.f, sc.fit.f);
+      lw = Math.pow(sc.fit.f, -0.6);          // a shrunk drawing keeps most of its line weight
+      ctx.lineWidth = 4.2 * s * lw;
+      for (const L of sc.coast[v]) stroke(ctx, L, p * L.len);
+    } else if (anim && t < ZE) {
+      const {fit, pF, A} = sc.zoom, e = ease((t - ZS) / (ZE - ZS)), kz = 1 + (sc.z - 1) * e;
+      const P = [pF[0] + (A[0] - pF[0]) * e, pF[1] + (A[1] - pF[1]) * e];
+      ctx.save();
+      ctx.translate(P[0], P[1]); ctx.scale(kz, kz); ctx.translate(-pF[0], -pF[1]);
+      ctx.translate(fit.ox, fit.oy); ctx.scale(fit.f, fit.f);
+      ctx.lineWidth = 4.2 * s * (Math.pow(fit.f, 0.4) * (1 - e) + e) / (fit.f * kz);   // same on-screen weight as before and after
+      for (const L of sc.coast[v]) stroke(ctx, L, p * L.len);
+      ctx.restore();
+      dotAt = P;
+    } else {
+      ctx.lineWidth = 4.2 * s;
+      for (const L of sc.final[v]) stroke(ctx, L, (anim ? 1 : p) * L.len);
+    }
     // 2. dot pops (2.0 - 2.4 s)
     const d = (t - 2.0) / 0.4;
     if (d > 0) {
       const r = 8 * s * (d < 0.7 ? Math.min(1, d) * 1.25 : 1 + 0.25 * Math.max(0, 1 - (d - 0.7) / 0.3));
       ctx.fillStyle = /^#[0-9a-f]{6}$/i.test(opt.dot) ? opt.dot : "#fff";
-      ctx.beginPath(); ctx.arc(sc.pt[0], sc.pt[1], r, 0, 2 * Math.PI); ctx.fill();
+      ctx.beginPath(); ctx.arc(dotAt[0], dotAt[1], r, 0, 2 * Math.PI); ctx.fill();
       ctx.fillStyle = "#fff";
     }
-    // 3. dashed leader (2.3 - 2.8 s)
-    const g = ease((t - 2.3) / 0.5);
+    // 3. dashed leader (2.3 - 2.8 s, later when zooming)
+    const g = ease((t - lag - 2.3) / 0.5);
     if (g > 0) {
       ctx.lineWidth = 3.2 * s * lw;
       const [a, b] = sc.lead, len = hyp(a, b), ux = (b[0] - a[0]) / len, uy = (b[1] - a[1]) / len, end = len * g;
@@ -277,8 +353,8 @@
       for (let k = 0; k < end; k += 16 * s) { const k2 = Math.min(k + 9 * s, end); ctx.moveTo(a[0] + ux * k, a[1] + uy * k); ctx.lineTo(a[0] + ux * k2, a[1] + uy * k2); }
       ctx.stroke();
     }
-    // 4. label written (2.7 - 4.1 s)
-    const w = Math.min(1, (t - 2.7) / 1.4);
+    // 4. label written (2.7 - 4.1 s, later when zooming)
+    const w = Math.min(1, (t - lag - 2.7) / 1.4);
     if (w > 0) {
       if (sc.hand) {
         ctx.lineWidth = lw * 5 * s * Math.max(0.7, Math.min(1.4, sc.cap / (92 * s)));
@@ -350,7 +426,7 @@
   const dims = () => opt.res.split("x").map(Number);
 
   async function ensureScene() {
-    const [W, H] = dims(), fc = RS.fonts ? JSON.stringify(RS.fonts.conf()) : "", key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.len, opt.shift, opt.size, opt.place, opt.style, fc, W, H]);
+    const [W, H] = dims(), fc = RS.fonts ? JSON.stringify(RS.fonts.conf()) : "", key = JSON.stringify([opt.text, opt.lat, opt.lon, opt.side, opt.len, opt.shift, opt.size, opt.place, opt.style, opt.zoom, opt.zmode, fc, W, H]);
     if (scene && key === sceneKey) { scene.dur = opt.dur; return scene; }
     if (!land) { land = await RS.neLayer("land", m => status(m)); status(""); }
     if (!(opt.style !== "font" && drawable(opt.text))) {     // typed label: load its glyphs before measuring or drawing
@@ -454,6 +530,7 @@
     $("miText").value = opt.text; $("miLat").value = opt.lat; $("miLon").value = opt.lon;
     $("miSide").value = opt.side; $("miDur").value = opt.dur; $("miRes").value = opt.res; $("miSize").value = opt.size;
     $("miPlace").value = opt.place; $("miBoil").checked = opt.boil; $("miDot").value = opt.dot; $("miStyle").value = opt.style;
+    $("miZoom").value = String(opt.zoom); $("miZmode").value = opt.zmode; $("miZmode").disabled = +opt.zoom === 1;
     $("miLen").value = opt.len; $("miShift").value = opt.shift;
     $("miLen").disabled = $("miShift").disabled = opt.side === "auto";
     $("miSizeVal").textContent = (+opt.size).toFixed(1) + "×";
@@ -490,6 +567,8 @@
           <label class="f" style="width:170px">점선 길이 (수동일 때)<input type="range" id="miLen" min="30" max="400" step="5"></label>
           <label class="f" style="width:170px">글자 옆으로 밀기 (수동일 때)<input type="range" id="miShift" min="-1" max="1" step="0.02"></label>
           <label class="f" style="width:170px">글자 방식<select id="miStyle"><option value="auto">자동 (영문 손글씨)</option><option value="font">항상 글꼴로</option></select></label>
+          <label class="f" style="width:150px">점 기준 확대<select id="miZoom"><option value="1">없음 (일본 전체)</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="5">5배</option></select></label>
+          <label class="f" style="width:170px">확대 방식<select id="miZmode"><option value="after">지도 그린 뒤 확대</option><option value="start">처음부터 확대</option></select></label>
           <label class="f" style="width:70px">점 색<input type="color" id="miDot" style="height:var(--h);padding:2px;width:100%"></label>
           <label class="check" style="align-self:flex-end;height:var(--h)"><input type="checkbox" id="miBoil"> 선 떨림 (손그림 느낌 · 끄면 선이 고정됨)</label>
         </div>
@@ -520,6 +599,8 @@
     $("miBoil").onchange = e => { opt.boil = e.target.checked; changed(); };
     $("miDot").oninput = e => { opt.dot = e.target.value; changed(); };
     $("miStyle").onchange = e => { opt.style = e.target.value; changed(); };
+    $("miZoom").onchange = e => { opt.zoom = +e.target.value; fill(); changed(); };
+    $("miZmode").onchange = e => { opt.zmode = e.target.value; changed(); };
     $("miSize").oninput = e => { opt.size = +e.target.value; $("miSizeVal").textContent = opt.size.toFixed(1) + "×"; changed(); };
     $("miStation").onchange = e => {
       const s = RS.app.C().stations[+e.target.value]; if (!s) return;
