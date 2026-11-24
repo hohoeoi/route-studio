@@ -133,12 +133,17 @@ const RS = (typeof window !== "undefined" ? (window.RS = window.RS || {}) : (glo
           if (!real.length) real = names.length ? names : cand;
           const name = real.reduce((a, b) => (words(b) > words(a) ? b : a));
           const kind = walk ? "walk" : (badge || kindOf(name));
-          seq.push(["leg", kind, walk ? "도보" : tidy(name), minutesOf(l) || 1]);
+          const prev = seq[seq.length - 1];
+          // "열차에 계속 탑승" (stay on the train): Google splits one ride into two legs with no stop between - join them
+          if (prev && prev[0] === "leg" && kind !== "walk" && prev[1] !== "walk") prev[3] += minutesOf(l) || 1;
+          else seq.push(["leg", kind, walk ? "도보" : tidy(name), minutesOf(l) || 1]);
           cand = [];
         }
         i++; continue;
       }
       if (PLATFORM.test(l) || isAddress(l) || startsWithAny(l, ["정거장 ID", "Stop ID", "정류장", "停留所"])) { i++; continue; }
+      // service notices ("기노쿠니선: 지연", "난키 선: 안전 확인 지연") and "stay on the train" lines are not line names
+      if (/[:：].*(지연|운휴|운행|遅延|運休|見合わせ|delay|suspend)/i.test(l) || /^(열차에 계속 탑승|そのまま乗車|Stay on)/i.test(l)) { i++; continue; }
       if (words(l) || startsWithAny(l, WALK)) cand.push(l.trim());
       i++;
     }
