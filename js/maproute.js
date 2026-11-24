@@ -140,7 +140,7 @@
   const DEF = {
     from: {name: "OSAKA", lat: 34.7025, lon: 135.4959, idx: null}, to: {name: "KUSHIMOTO", lat: 33.4753, lon: 135.7811, idx: null},
     shape: "curve-r", zoom: "auto", zmode: "after", place: "cm", move: 3, hold: 1.5, res: "1920x1080", size: 1, style: "auto",
-    boil: true, dot: "#ffffff", line: "#ffffff", dash: false, head: true, stops: true,
+    boil: true, dot: "#ffffff", line: "#ffffff", dash: false, head: true, stops: true, smooth: 0,
   };
   const load = () => {
     try {
@@ -161,16 +161,16 @@
     let a = Number.isInteger(o.from.idx) ? o.from.idx : 0, b = Number.isInteger(o.to.idx) ? o.to.idx : st.length - 1;
     a = Math.max(0, Math.min(st.length - 1, a)); b = Math.max(0, Math.min(st.length - 1, b));
     if (a === b) return null;
-    const dir = a < b ? 1 : -1, pts = [[+st[a].lat, +st[a].lon]], mids = [];
+    const dir = a < b ? 1 : -1, pts = [[+st[a].lat, +st[a].lon]], mids = [], breaks = [];
     for (let i = a; i !== b; i += dir) {
       const p = st[i], q = st[i + dir];
       const g = sg.find(x => x.from === p.id && x.to === q.id) || sg.find(x => x.from === q.id && x.to === p.id);
       let path = g && Array.isArray(g.path) && g.path.length >= 2 ? g.path.map(v => [+v[0], +v[1]]) : [];
       if (g && g.from === q.id) path.reverse();
       pts.push(...path, [+q.lat, +q.lon]);
-      if (i + dir !== b) mids.push([+q.lat, +q.lon]);
+      if (i + dir !== b) { mids.push([+q.lat, +q.lon]); breaks.push(pts.length - 1); }
     }
-    return {pts, mids};
+    return {pts, mids, breaks};
   }
   function routeLatLon(o) {
     if (o.shape === "project") { const c = projectChain(o); if (c) return c; }
@@ -279,7 +279,12 @@
     }
     // route in drawing space, smoothed a little and resampled so it can be drawn on by length
     let rl = line.map(T);
-    rl = rl.length > 2 ? chaikinOpen(dp(rl, 0.8 * s), 2) : rl;
+    // "선 다듬기": drop the small wiggles of a real track (bigger simplify step), then round the corners off
+    // each stop-to-stop piece separately, so the line still passes through every stop
+    const sm = +o.smooth || 0, cuts = o.shape === "project" && R.breaks ? R.breaks : [], pieces = [];
+    let from = 0; for (const k of cuts.concat([rl.length - 1])) { pieces.push(rl.slice(from, k + 1)); from = k; }
+    rl = pieces.map(q => q.length > 2 ? chaikinOpen(dp(q, [0.8, 12, 32][sm] * s), sm ? 5 : 2) : q)
+      .reduce((acc, q, i) => i ? acc.concat(q.slice(1)) : q, []);
     rl = resample(rl, 2 * s);
     const A0 = rl[0], A1 = rl[rl.length - 1];
     const plain = withLen(rl);
@@ -433,7 +438,7 @@
   async function ensureScene() {
     const [W, H] = dims(), fc = RS.fonts ? JSON.stringify(RS.fonts.conf()) : "";
     const chain = opt.shape === "project" ? JSON.stringify(routeLatLon(opt)) : "";
-    const key = JSON.stringify([opt.from, opt.to, opt.shape, opt.zoom, opt.zmode, opt.place, opt.size, opt.style, opt.stops, fc, chain, W, H]);
+    const key = JSON.stringify([opt.from, opt.to, opt.shape, opt.zoom, opt.zmode, opt.place, opt.size, opt.style, opt.stops, opt.smooth, fc, chain, W, H]);
     if (scene && key === sceneKey) return scene;
     if (!land) { land = await RS.neLayer("land", m => status(m)); status(""); }
     for (const t of [opt.from.name, opt.to.name]) {
@@ -547,7 +552,7 @@
     $("rmPlace").value = opt.place; $("rmMove").value = opt.move; $("rmHold").value = opt.hold; $("rmRes").value = opt.res;
     $("rmSize").value = opt.size; $("rmSizeVal").textContent = (+opt.size).toFixed(1) + "×"; $("rmStyle").value = opt.style;
     $("rmLine").value = opt.line; $("rmDot").value = opt.dot; $("rmDash").checked = opt.dash; $("rmHead").checked = opt.head;
-    $("rmStops").checked = opt.stops; $("rmBoil").checked = opt.boil;
+    $("rmStops").checked = opt.stops; $("rmBoil").checked = opt.boil; $("rmSmooth").value = String(opt.smooth || 0);
   }
   function changed() { save(opt); if (!playing) preview(Math.min(cur || 99, 99)); }
 
@@ -581,6 +586,7 @@
           <label class="f">해상도<select id="rmRes"><option value="1280x720">1280×720 (HD)</option><option value="1920x1080">1920×1080 (FHD)</option><option value="2560x1440">2560×1440</option><option value="3840x2160">3840×2160 (4K)</option></select></label>
         </div>
         <div class="bar">
+          <label class="f" style="width:170px">선 다듬기<select id="rmSmooth"><option value="0">원래 모양</option><option value="1">부드럽게</option><option value="2">아주 부드럽게</option></select></label>
           <label class="f" style="width:170px">확대<select id="rmZoom"><option value="auto">자동 (경로에 맞춤)</option><option value="1">없음 (일본 전체)</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="5">5배</option><option value="6">6배</option><option value="7">7배</option><option value="8">8배</option><option value="9">9배</option><option value="10">10배</option></select></label>
           <label class="f" style="width:170px">확대 방식<select id="rmZmode"><option value="after">지도 그린 뒤 확대</option><option value="start">처음부터 확대</option></select></label>
           <label class="f" style="width:180px">화면 배치<select id="rmPlace"><option value="lt">좌상단</option><option value="ct">중상단</option><option value="rt">우상단</option><option value="lm">좌중단</option><option value="cm">중중단 (가운데)</option><option value="rm">우중단</option><option value="lb">좌하단</option><option value="cb">중하단</option><option value="rb">우하단</option></select></label>
@@ -637,6 +643,7 @@
     };
     $("rmZoom").onchange = e => { opt.zoom = e.target.value === "auto" ? "auto" : +e.target.value; fill(); changed(); };
     $("rmZmode").onchange = e => { opt.zmode = e.target.value; changed(); };
+    $("rmSmooth").onchange = e => { opt.smooth = +e.target.value; changed(); };
     $("rmPlace").onchange = e => { opt.place = e.target.value; changed(); };
     $("rmRes").onchange = e => { opt.res = e.target.value; changed(); };
     $("rmSize").oninput = e => { opt.size = +e.target.value; $("rmSizeVal").textContent = opt.size.toFixed(1) + "×"; changed(); };
