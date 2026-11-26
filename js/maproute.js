@@ -197,7 +197,8 @@
     if (hand) return textStrokes(text, 0, 0, cap, gap).width;
     const c = new OffscreenCanvas(8, 8).getContext("2d"); c.font = fontCss(cap, text); return c.measureText(text).width;
   }
-  function build(land, o, W, H) {
+  // detail: OpenStreetMap coastline chains ([lon, lat] lists) for close-up views, or null
+  function build(land, o, W, H, detail = null) {
     const s = H / 1080, k = 63 * s, kx = k * Math.cos(38 * Math.PI / 180);
     const X = lo => W / 2 + 40 * s + (lo - 137.6) * kx, Y = la => 42 * s + (45.55 - la) * k;
     const smooth = smoothFor(s);
@@ -242,13 +243,13 @@
     };
     const japan = bb([].concat(...coast, line));
     const full = fitTo(...japan, "c", "m").f;
-    const [rx0, rx1, ry0, ry1] = bb(line), rw = Math.max(rx1 - rx0, 4 * s), rh = Math.max(ry1 - ry0, 4 * s);
+    const [rx0, rx1, ry0, ry1] = bb(line), rw = Math.max(rx1 - rx0, 0.02 * s), rh = Math.max(ry1 - ry0, 0.02 * s);
     let z;
     if (o.zoom === "auto") {
       const room = pl === "cm" ? 0.5 : 0.3;
       z = Math.min(room * W / rw, room * H / rh) / full;
-      z = z < 1.4 ? 1 : Math.min(z, 14);
-    } else z = Math.max(1, Math.min(10, Math.round(+o.zoom) || 1));
+      z = z < 1.4 ? 1 : Math.min(z, ZMAX);
+    } else z = Math.max(1, Math.min(ZMAX, Math.round(+o.zoom) || 1));
 
     const cap = 64 * s * o.size, gap = 11 * s * o.size;
     const hand = t => o.style !== "font" && drawable(t);
@@ -264,7 +265,18 @@
       const A = [{l: 0.3, c: 0.5, r: 0.7}[hx] * W, {t: 0.36, m: 0.5, b: 0.64}[vy] * H];
       T = p => [A[0] + (p[0] - c[0]) * zs, A[1] + (p[1] - c[1]) * zs];
       const pad = 40 * s, inside = p => p[0] > -pad && p[0] < W + pad && p[1] > -pad && p[1] < H + pad;
-      for (const r of rings) {
+      const clipRun = (q, closedRing) => {
+        if (q.every(inside)) { const cc = smooth(closedRing ? q : q, closedRing); if (cc) fin.push(cc); return; }
+        let run = [];
+        const flush = () => { if (run.length > 1) { const cc = smooth(run, false); if (cc) fin.push(cc); } run = []; };
+        for (const p of closedRing ? q.concat([q[0]]) : q) { if (inside(p)) run.push(p); else flush(); }
+        flush();
+      };
+      if (detail) for (const ch of detail) {      // close-up: OpenStreetMap coastline instead of the 1:10M outline
+        const q = ch.map(([lo, la]) => T([X(lo), Y(la)])), cl = ch.length > 3 && ch[0][0] === ch[ch.length - 1][0] && ch[0][1] === ch[ch.length - 1][1];
+        clipRun(cl ? q.slice(0, -1) : q, cl);
+      }
+      for (const r of detail ? [] : rings) {
         if (o.zmode !== "start" && r.a < 60 * s * s) continue;       // zoom animation: same islands before and after
         if (r.a * zs * zs / (full * full) < 60 * s * s * 0.6) continue;
         const q = r.q.map(T);
@@ -275,7 +287,15 @@
         flush();
       }
       fin.sort(bySize);
-      sc.fit = {f: 1, ox: 0, oy: 0}; sc.zoom = {fit, pF, A, c, kEnd: zs / fit.f};
+      sc.fit = {f: 1, ox: 0, oy: 0}; sc.zoom = {fit, pF, A, c, zs, kEnd: zs / fit.f};
+      sc.zd = 1.2 + 0.7 * Math.max(0, Math.log10(zs / fit.f) - 1);   // deeper zooms take a little longer
+      sc.detail = !!detail;
+      // the area on screen in lat/lon, for fetching a detailed coastline when the outline is too coarse
+      if (z > DETAIL_Z) {
+        const inv = q => { const pm = [c[0] + (q[0] - A[0]) / zs, c[1] + (q[1] - A[1]) / zs]; return [45.55 - (pm[1] - 42 * s) / k, 137.6 + (pm[0] - W / 2 - 40 * s) / kx]; };
+        const [la0, lo0] = inv([-0.25 * W, 1.25 * H]), [la1, lo1] = inv([1.25 * W, -0.25 * H]);
+        sc.view = [la0, lo0, la1, lo1].map(v => +v.toFixed(4));          // south, west, north, east
+      }
     }
     // route in drawing space, smoothed a little and resampled so it can be drawn on by length
     let rl = line.map(T);
@@ -340,10 +360,11 @@
   }
 
   // ------------------------------------------------------------ timing
-  const ZS = 2.5, ZE = 3.7;
+  const ZS = 2.5, ZMAX = 1000, DETAIL_Z = 12;
+  const zEnd = sc => ZS + (sc.zd || 1.2);
   function times(sc, o) {
     const anim = sc.z > 1 && o.zmode !== "start";
-    const t0 = anim ? ZE + 0.15 : 2.0, tl = t0 + 0.7, te = tl + Math.max(0.5, +o.move || 3);
+    const t0 = anim ? zEnd(sc) + 0.15 : 2.0, tl = t0 + 0.7, te = tl + Math.max(0.5, +o.move || 3);
     return {anim, t0, tl, te, dur: te + 1.3 + Math.max(0, +o.hold || 0)};
   }
 
@@ -370,13 +391,22 @@
       lw = Math.pow(sc.fit.f, -0.6);
       ctx.lineWidth = 4.2 * s * lw;
       for (const L of sc.coast[v]) stroke(ctx, L, p * L.len);
-    } else if (tm.anim && t < ZE) {
-      const {fit, pF, A, kEnd} = sc.zoom, e = ease((t - ZS) / (ZE - ZS)), kz = 1 + (kEnd - 1) * e;
-      const P = [pF[0] + (A[0] - pF[0]) * e, pF[1] + (A[1] - pF[1]) * e];
+    } else if (tm.anim && t < zEnd(sc)) {
+      // scale grows geometrically (a 500x zoom would otherwise rush past everything in the first frames)
+      const {fit, pF, A, kEnd, zs, c} = sc.zoom, e = ease((t - ZS) / (zEnd(sc) - ZS)), kz = Math.pow(kEnd, e), u = kEnd > 1 ? (kz - 1) / (kEnd - 1) : e;
+      const P = [pF[0] + (A[0] - pF[0]) * u, pF[1] + (A[1] - pF[1]) * u];
       ctx.translate(P[0], P[1]); ctx.scale(kz, kz); ctx.translate(-pF[0], -pF[1]);
       ctx.translate(fit.ox, fit.oy); ctx.scale(fit.f, fit.f);
+      const fade = sc.detail ? Math.min(1, Math.max(0, (e - 0.6) / 0.4)) : 0;
+      ctx.globalAlpha = 1 - fade;
       ctx.lineWidth = 4.2 * s * (Math.pow(fit.f, 0.4) * (1 - e) + e) / (fit.f * kz);
       for (const L of sc.coast[v]) stroke(ctx, L, p * L.len);
+      if (fade > 0) {                        // the detailed coastline (final-view coordinates) fades in near the end
+        ctx.globalAlpha = fade;
+        ctx.translate(c[0], c[1]); ctx.scale(1 / zs, 1 / zs); ctx.translate(-A[0], -A[1]);
+        ctx.lineWidth = 4.2 * s * zs / (fit.f * kz);
+        for (const L of sc.final[v]) stroke(ctx, L, L.len);
+      }
       ctx.restore(); return;                 // nothing else shows until the zoom has settled
     } else {
       ctx.lineWidth = 4.2 * s;
@@ -446,8 +476,36 @@
       if (RS.fonts) await RS.fonts.ensure(t);
       if (document.fonts) await document.fonts.load(fontCss(64 * H / 1080 * opt.size, t), t).catch(() => []);
     }
-    scene = build(land, opt, W, H); sceneKey = key;
+    let sc = build(land, opt, W, H);
+    if (sc.view) {                           // close-up: the 1:10M outline is too coarse, use OpenStreetMap's coastline
+      const chains = await coastDetail(sc.view);
+      if (chains) { sc = build(land, opt, W, H, chains); status("상세 해안선: OpenStreetMap 데이터입니다. 영상 설명란에 '© OpenStreetMap contributors' 를 적어 주세요.", "ok"); }
+    }
+    scene = sc; sceneKey = key;
     return scene;
+  }
+  // coastline ways around the view from Overpass, merged into chains; kept in this browser per area
+  const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+  async function coastDetail(v) {
+    const ck = "osmcoast:" + v.map(x => x.toFixed(3)).join(",");
+    const hit = RS.cacheGet ? await RS.cacheGet(ck) : null;
+    if (hit) return hit;
+    const q = `[out:json][timeout:60];way["natural"="coastline"](${v.join(",")});out geom;`;
+    let last = null;
+    for (const url of OVERPASS) {
+      try {
+        status("상세 해안선을 OpenStreetMap에서 받는 중…");
+        const r = await fetch(url, {method: "POST", body: new URLSearchParams({data: q})});
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const data = await r.json();
+        const ways = (data.elements || []).filter(e => e.type === "way" && e.geometry).map(e => e.geometry.map(g => [g.lon, g.lat]));
+        const chains = RS.mergeChains ? RS.mergeChains(ways) : ways;
+        if (RS.cacheSet) await RS.cacheSet(ck, chains);
+        return chains;
+      } catch (e) { last = e; }
+    }
+    status(`상세 해안선을 받지 못해 일본 전체 윤곽선으로 그립니다 (${last && last.message}). 많이 확대하면 해안선이 거칠게 보일 수 있습니다.`, "warn");
+    return null;
   }
   async function preview(t) {
     let sc; try { sc = await ensureScene(); } catch (e) { status(e.message, "error"); return; }
@@ -587,7 +645,7 @@
         </div>
         <div class="bar">
           <label class="f" style="width:170px">선 다듬기<select id="rmSmooth"><option value="0">원래 모양</option><option value="1">부드럽게</option><option value="2">아주 부드럽게</option></select></label>
-          <label class="f" style="width:170px">확대<select id="rmZoom"><option value="auto">자동 (경로에 맞춤)</option><option value="1">없음 (일본 전체)</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="5">5배</option><option value="6">6배</option><option value="7">7배</option><option value="8">8배</option><option value="9">9배</option><option value="10">10배</option></select></label>
+          <label class="f" style="width:170px">확대<select id="rmZoom"><option value="auto">자동 (경로에 맞춤)</option><option value="1">없음 (일본 전체)</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="5">5배</option><option value="6">6배</option><option value="7">7배</option><option value="8">8배</option><option value="9">9배</option><option value="10">10배</option><option value="20">20배</option><option value="50">50배</option><option value="100">100배</option><option value="200">200배</option><option value="500">500배</option><option value="1000">1000배</option></select></label>
           <label class="f" style="width:170px">확대 방식<select id="rmZmode"><option value="after">지도 그린 뒤 확대</option><option value="start">처음부터 확대</option></select></label>
           <label class="f" style="width:180px">화면 배치<select id="rmPlace"><option value="lt">좌상단</option><option value="ct">중상단</option><option value="rt">우상단</option><option value="lm">좌중단</option><option value="cm">중중단 (가운데)</option><option value="rm">우중단</option><option value="lb">좌하단</option><option value="cb">중하단</option><option value="rb">우하단</option></select></label>
           <label class="f" style="width:160px">글자 크기 <span class="mono" id="rmSizeVal"></span><input type="range" id="rmSize" min="0.6" max="1.6" step="0.1"></label>
