@@ -245,7 +245,8 @@
         if (coords[i] && coords[i + 1] && (!opts.road || ferry)) continue;
         log(`Google 경로 확인 ${i + 1}/${n - 1}`);
         try {
-          const r = await requestRoutes(key, coords[i] || rows[i].query, coords[i + 1] || rows[i + 1].query, "driving", null, "en");
+          const walk = rows[i].leg && rows[i].leg.kind === "walk";
+          const r = await requestRoutes(key, coords[i] || rows[i].query, coords[i + 1] || rows[i + 1].query, walk && opts.road ? "walking" : "driving", null, "en");
           const st = r.steps;
           if (!coords[i]) coords[i] = [st[0].start.lat, st[0].start.lng];
           if (!coords[i + 1]) coords[i + 1] = [st[st.length - 1].end.lat, st[st.length - 1].end.lng];
@@ -263,7 +264,35 @@
       if (k) await sleep(1100);
       coords[i] = await nominatim(rows[i].query);
     }
+    // walking / driving legs still without a ground path (no Google key, or Google failed):
+    // follow real streets with the OpenStreetMap routing service (FOSSGIS, no key)
+    if (opts.road) {
+      let used = 0;
+      for (let i = 0; i < n - 1; i++) {
+        const kind = rows[i].leg && rows[i].leg.kind;
+        if (paths[i] || !(kind === "walk" || kind === "car")) continue;
+        log(`OpenStreetMap ${kind === "walk" ? "도보" : "도로"} 경로 ${i + 1}/${n - 1}`);
+        try { const p = await osmPath(kind, coords[i], coords[i + 1]); if (p.length >= 2) { paths[i] = p; used++; } }
+        catch (e) { notes.push(`${rows[i].query} → ${rows[i + 1].query}: ${e.message}`); }
+      }
+      if (used) notes.push(`도보·도로 ${used}구간은 OpenStreetMap 경로 데이터로 그렸습니다. 영상 설명란에 '© OpenStreetMap contributors' 를 적어 주세요.`);
+    }
     return {coords, paths, notes};
+  }
+  async function osmPath(kind, a, b) {
+    const ck = `osmroute:${kind}:${a[0].toFixed(5)},${a[1].toFixed(5)}:${b[0].toFixed(5)},${b[1].toFixed(5)}`, hit = await cacheGet(ck);
+    if (hit) return hit;
+    const prof = kind === "walk" ? "routed-foot" : "routed-car";
+    const url = `https://routing.openstreetmap.de/${prof}/route/v1/driving/${a[1]},${a[0]};${b[1]},${b[0]}?overview=full&geometries=geojson`;
+    let r;
+    try { r = await fetch(url); } catch (e) { throw new Error("OpenStreetMap 경로 서버에 접속하지 못했습니다 (곡선으로 그립니다)."); }
+    if (!r.ok) throw new Error(`OpenStreetMap 경로 요청 실패 (HTTP ${r.status}, 곡선으로 그립니다).`);
+    const data = await r.json(), rt = (data.routes || [])[0];
+    if (!rt || !rt.geometry) throw new Error("OpenStreetMap에서 경로를 찾지 못했습니다 (곡선으로 그립니다).");
+    const p = thinPath(rt.geometry.coordinates.map(([lo, la]) => [la, lo]));
+    await sleep(1000);                         // light use of a free public service
+    await cacheSet(ck, p);
+    return p;
   }
 
   // ---- Google Maps share links (gmaps_link.py).  A short maps.app.goo.gl link cannot be opened from
