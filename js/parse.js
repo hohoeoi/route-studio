@@ -103,7 +103,38 @@ const RS = (typeof window !== "undefined" ? (window.RS = window.RS || {}) : (glo
   }
   const norm = n => n.replace(/[\s역駅]|Station/gi, "").toLowerCase();
 
+  // Google Maps driving directions: "도착지 이름" + address line for each stop, turn-by-turn steps with
+  // "2분(850 미터)", and one "3시간 8분(214 km)" summary line right before each next stop.
+  const DRIVE_DUR = /^(?:(\d+)\s*(?:시간|時間|hr|h)\s*)?(?:(\d+)\s*(?:분|分|min))?\s*[(（]\s*\d[\d.,]*\s*(?:km|m|미터|킬로미터|メートル|キロ|mi|ft)\s*[)）]$/i;
+  const isDriveDur = l => { const m = DRIVE_DUR.exec(l.trim()); return !!(m && (m[1] || m[2])); };
+  function driveStops(lines) {
+    const out = [];
+    for (let i = 0; i + 1 < lines.length; i++)
+      if (isAddress(lines[i + 1]) && !isAddress(lines[i]) && !isDriveDur(lines[i]) && !/^(출발|도착|From|To|出発|到着)\s*[:：]/.test(lines[i])) out.push(i);
+    return out;
+  }
+  function looksLikeDriving(text) {
+    const lines = text.replace(/ /g, " ").split("\n").map(l => l.trim()).filter(Boolean);
+    return lines.filter(isDriveDur).length >= 2 && driveStops(lines).length >= 2 && !lines.some(l => TIME.test(l));
+  }
+  function parseDriving(text) {
+    const lines = text.replace(/ /g, " ").split("\n").map(l => l.trim()).filter(Boolean);
+    const at = driveStops(lines), stops = at.map(i => lines[i]), legs = [];
+    for (let k = 1; k < at.length; k++) {
+      let summary = null, sum = 0;
+      for (let j = at[k] - 1; j > at[k - 1] + 1; j--) if (isDriveDur(lines[j])) { summary = summary == null ? minutesOf(lines[j]) : summary; break; }
+      for (let j = at[k - 1] + 2; j < at[k]; j++) if (isDriveDur(lines[j])) sum += minutesOf(lines[j]) || 0;
+      // the summary is the leg total; if Google left it out, the steps add up to the same thing
+      const min = summary != null && summary * 2 >= sum * 0.9 ? summary : sum || 1;
+      legs.push({kind: "car", line: "", min});
+    }
+    if (stops.length < 2) throw new RouteError("자동차 경로에서 출발지와 도착지를 찾지 못했습니다.\nGoogle 지도 경로 패널 전체를 복사했는지 확인해 주세요.");
+    const head = lines.slice(0, at[0]).find(isDriveDur);
+    return {stops, legs, fare: null, total_min: head ? minutesOf(head) : legs.reduce((a, b) => a + b.min, 0)};
+  }
+
   function parseItinerary(text, dropWalks = true) {
+    if (looksLikeDriving(text)) return parseDriving(text);
     let lines = text.replace(/ /g, " ").split("\n").map(l => l.trim()).filter(Boolean);
     const seq = []; let fare = null; const clk = []; let cand = [];
     let i = 0;
@@ -186,13 +217,14 @@ const RS = (typeof window !== "undefined" ? (window.RS = window.RS || {}) : (glo
   function looksLikeItinerary(text) {
     const lines = text.replace(/ /g, " ").split("\n").map(l => l.trim()).filter(Boolean);
     if (!lines.length) return false;
+    if (looksLikeDriving(text)) return true;
     if (lines.filter(l => l.includes("|")).length >= Math.max(1, Math.floor(lines.length / 2))) return false;
     const times = lines.filter(l => TIME.test(l)).length;
     const marks = lines.filter(l => PLATFORM.test(l) || FARE.test(l) || l.includes("정거장 ID") || l.includes("Stop ID") || startsWithAny(l, WALK)).length;
     return times >= 2 || (times >= 1 && marks >= 2) || marks >= 3;
   }
   function itineraryToText(p, region = "") {
-    const w = {walk: "도보", train: "열차", subway: "지하철", bus: "버스", ferry: "배", shinkansen: "신칸센"};
+    const w = {walk: "도보", car: "자동차", train: "열차", subway: "지하철", bus: "버스", ferry: "배", shinkansen: "신칸센"};
     const rows = [], head = [];
     if (p.total_min) head.push(`전체 ${p.total_min}분`);
     if (p.fare) head.push(`요금 ${p.fare}`);
